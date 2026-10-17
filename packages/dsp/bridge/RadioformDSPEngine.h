@@ -67,6 +67,8 @@ typedef NS_ENUM(NSInteger, RadioformFilterType) {
 @property (nonatomic, assign) float preampDb;
 @property (nonatomic, assign) BOOL limiterEnabled;
 @property (nonatomic, assign) float limiterThresholdDb;
+@property (nonatomic, assign) BOOL spatialEnabled;
+@property (nonatomic, assign) float spatialMix;
 
 /// Create a flat preset (transparent, no processing)
 + (instancetype)flatPreset;

@@ -50,6 +50,7 @@ let package = Package(
         )
     ],
     dependencies: [
+        .package(path: "../../../packages/configuration"),
         // Sparkle 2.x for auto-updates
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.5.0")
     ],
@@ -57,7 +58,8 @@ let package = Package(
         .executableTarget(
             name: "RadioformApp",
             dependencies: [
-                .product(name: "Sparkle", package: "Sparkle")
+                .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "RadioformConfiguration", package: "configuration")
             ],
             path: "Sources",
             resources: [

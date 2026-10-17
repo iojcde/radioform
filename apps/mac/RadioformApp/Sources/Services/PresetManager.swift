@@ -7,30 +7,29 @@ enum PresetError: Error {
     case decodingFailed
 }
 
-/// Result of mapping a preset's bands to the standard 10-band UI frequencies
-struct MappedBandResult {
-    var gains: [Float]
-    var qFactors: [Float]
-    var filterTypes: [FilterType]
-    var frequencies: [Float]
-    var warnings: [String]
-}
-
 /// Manages loading, saving, and organizing presets
 class PresetManager: ObservableObject {
     static let shared = PresetManager()
     static let customPresetName = "Custom"
+    static let preampFocusIndex = -1
 
     @Published var bundledPresets: [EQPreset] = []
     @Published var userPresets: [EQPreset] = []
     @Published var currentPreset: EQPreset?
     @Published var isEnabled: Bool = true
-    @Published var currentBands: [Float] = Array(repeating: 0, count: 10)  // Current gain values for 10 bands
+    @Published var currentBands: [Float] = Array(repeating: 0, count: 10)  // Default editor layout
+
+    @Published private(set) var currentBandCount: Int = 10
+
+    @Published var currentBandEnabled: [Bool] = Array(repeating: false, count: 10)
 
     // Per-band advanced settings
     @Published var currentQFactors: [Float] = Array(repeating: 1.0, count: 10)
     @Published var currentFilterTypes: [FilterType] = Array(repeating: .peak, count: 10)
-    @Published var currentFrequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+    @Published var currentFrequencies: [Float] = EQBand.standardFrequencies
+
+    @Published var currentSpatialEnabled = false
+    @Published var currentSpatialMix: Float = 0.4
 
     // Global settings
     @Published var currentPreampDb: Float = 0.0
@@ -38,7 +37,7 @@ class PresetManager: ObservableObject {
     @Published var currentLimiterThresholdDb: Float = -1.0
 
     // Focus mode state
-    @Published var focusedBandIndex: Int? = nil   // nil = no focus, 0-9 = band, 10 = preamp
+    @Published var focusedBandIndex: Int? = nil   // nil = no focus, nonnegative = band, -1 = preamp
 
     // Custom preset state
     @Published var isCustomPreset: Bool = false
@@ -50,24 +49,22 @@ class PresetManager: ObservableObject {
     private(set) var userPresetIDs: Set<EQPreset.ID> = []
 
     private let userPresetsURL: URL
-    private let standardFrequencies: [Float] = [
-        32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000,
-    ]
-
     // Timers
     private var audioApplyTimer: Timer?
 
-    private init() {
+    private convenience init() {
         // Get user presets directory
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first!
 
-        userPresetsURL =
+        let presetsURL =
             appSupport
             .appendingPathComponent("Radioform")
             .appendingPathComponent("Presets")
+
+        self.init(userPresetsURL: presetsURL)
 
         // Create directory if needed
         try? FileManager.default.createDirectory(
@@ -86,6 +83,11 @@ class PresetManager: ObservableObject {
         } else if let flatPreset = bundledPresets.first(where: { $0.name == "Flat" }) {
             applyPreset(flatPreset)
         }
+    }
+
+    /// Create an isolated library without loading or applying a preset.
+    init(userPresetsURL: URL) {
+        self.userPresetsURL = userPresetsURL
     }
 
     /// Load all presets (bundled + user)
@@ -247,110 +249,33 @@ class PresetManager: ObservableObject {
         loadAllPresets()
     }
 
-    /// Map preset bands to standard 10-band UI frequencies
-    private func mapPresetToStandardBands(_ preset: EQPreset) -> MappedBandResult {
-        var gains: [Float] = Array(repeating: 0, count: 10)
-        var qFactors: [Float] = Array(repeating: 1.0, count: 10)
-        var filterTypes: [FilterType] = Array(repeating: .peak, count: 10)
-        var frequencies: [Float] = standardFrequencies
-        var warnings: [String] = []
-
-        // If preset has exactly 10 bands, use them directly by index (preserves custom frequencies)
-        if preset.bands.count == 10 {
-            for i in 0..<10 {
-                let band = preset.bands[i]
-                gains[i] = band.enabled ? band.gainDb : 0
-                qFactors[i] = band.qFactor
-                filterTypes[i] = band.filterType
-                frequencies[i] = band.frequencyHz
-            }
-            return MappedBandResult(gains: gains, qFactors: qFactors, filterTypes: filterTypes, frequencies: frequencies, warnings: warnings)
-        }
-
-        // For presets with fewer bands, use log-distance matching to map to standard slots
-        var usedBandIndices = Set<Int>()
-
-        func logDistance(_ f1: Float, _ f2: Float) -> Float {
-            return abs(log10(f1) - log10(f2))
-        }
-
-        let allBands = preset.bands.enumerated().map { ($0.offset, $0.element) }
-
-        for i in 0..<10 {
-            let targetFreq = standardFrequencies[i]
-
-            var bestMatch: (index: Int, band: EQBand, distance: Float)?
-
-            for (presetIdx, band) in allBands {
-                if usedBandIndices.contains(presetIdx) {
-                    continue
-                }
-
-                let distance = logDistance(band.frequencyHz, targetFreq)
-
-                if bestMatch == nil || distance < bestMatch!.distance {
-                    bestMatch = (presetIdx, band, distance)
-                }
-            }
-
-            if let match = bestMatch {
-                let maxToleranceOctaves: Float = 0.5
-                let maxLogDistance = maxToleranceOctaves * log10(2)
-
-                if match.distance <= maxLogDistance {
-                    gains[i] = match.band.enabled ? match.band.gainDb : 0
-                    qFactors[i] = match.band.qFactor
-                    filterTypes[i] = match.band.filterType
-                    frequencies[i] = match.band.frequencyHz
-                    usedBandIndices.insert(match.index)
-                } else {
-                    let octaveDiff = match.distance / log10(2)
-                    warnings.append(
-                        "Band at \(Int(match.band.frequencyHz))Hz is \(String(format: "%.1f", octaveDiff)) octaves from \(Int(targetFreq))Hz slider - setting to 0dB"
-                    )
-                }
-            }
-        }
-
-        let enabledBands = allBands.filter { $0.1.enabled }
-        for (presetIdx, band) in enabledBands {
-            if !usedBandIndices.contains(presetIdx) {
-                warnings.append(
-                    "Band at \(Int(band.frequencyHz))Hz (\(String(format: "%.1f", band.gainDb))dB) has no matching slider - ignored"
-                )
-            }
-        }
-
-        return MappedBandResult(gains: gains, qFactors: qFactors, filterTypes: filterTypes, frequencies: frequencies, warnings: warnings)
-    }
-
     /// Apply preset via IPC
     func applyPreset(_ preset: EQPreset) {
+        guard preset.isValid() else { return }
+        audioApplyTimer?.invalidate()
         do {
-            try IPCController.shared.applyPreset(preset)
+            try IPCController.shared.applyPreset(isEnabled ? preset : EQPreset.flat())
             currentPreset = preset
 
             // Reset custom preset state
             isCustomPreset = false
             isEditingPresetName = false
 
-            // Update all tracked state from preset
-            let result = mapPresetToStandardBands(preset)
-            currentBands = result.gains
-            currentQFactors = result.qFactors
-            currentFilterTypes = result.filterTypes
-            currentFrequencies = result.frequencies
+            // Keep exact parametric values when showing the preset in the editor.
+            focusedBandIndex = nil
+            currentBandCount = preset.bands.count
+            let slots = preset.editableBands()
+            currentBands = slots.map(\.gainDb)
+            currentQFactors = slots.map(\.qFactor)
+            currentFilterTypes = slots.map(\.filterType)
+            currentFrequencies = slots.map(\.frequencyHz)
+            currentBandEnabled = slots.map(\.enabled)
+            currentSpatialEnabled = preset.spatialEnabled
+            currentSpatialMix = preset.spatialMix
             currentPreampDb = preset.preampDb
             currentLimiterEnabled = preset.limiterEnabled
             currentLimiterThresholdDb = preset.limiterThresholdDb
 
-            // Log any mapping issues
-            if !result.warnings.isEmpty {
-                print("[PresetManager] Preset '\(preset.name)' mapping warnings:")
-                for warning in result.warnings {
-                    print("  - \(warning)")
-                }
-            }
         } catch {
             print("Failed to apply preset: \(error)")
         }
@@ -358,7 +283,7 @@ class PresetManager: ObservableObject {
 
     /// Update a single band and apply immediately (batched to avoid multiple redraws)
     func updateBand(index: Int, gainDb: Float) {
-        guard index >= 0 && index < 10 else { return }
+        guard (0..<currentBandCount).contains(index) else { return }
 
         // Update band value without triggering @Published (direct array mutation)
         // We'll manually notify once at the end
@@ -367,6 +292,7 @@ class PresetManager: ObservableObject {
 
         // Batch all state changes together
         currentBands[index] = gainDb
+        currentBandEnabled[index] = true
 
         // Only update these if needed (avoids redundant publishes during drag)
         if needsPresetClear {
@@ -385,9 +311,6 @@ class PresetManager: ObservableObject {
         applyCurrentStateToAudio()
     }
 
-    /// Round dB level to 1 decimal place (reflecting how dB values are formatted in the UI)
-    private func roundDb(_ db: Float) -> Float { (db * 10).rounded() / 10 }
-
     /// Apply current state to audio, throttled to prevent IPC flooding during rapid updates
     private func applyCurrentStateToAudio() {
         // Throttle: coalesce rapid calls (drag, scroll) into one IPC write per ~30ms
@@ -399,14 +322,14 @@ class PresetManager: ObservableObject {
 
     private func doApplyCurrentStateToAudio() {
         let enabled = isEnabled
-        let bands = currentFrequencies.enumerated().map { index, frequency in
+        let bands = currentFrequencies.prefix(currentBandCount).enumerated().map { index, frequency in
             let gain = enabled ? currentBands[index] : 0.0
             return EQBand(
                 frequencyHz: frequency,
-                gainDb: roundDb(gain),
+                gainDb: gain,
                 qFactor: currentQFactors[index],
                 filterType: currentFilterTypes[index],
-                enabled: abs(gain) > 0.01
+                enabled: enabled && currentBandEnabled[index]
             )
         }
 
@@ -420,7 +343,8 @@ class PresetManager: ObservableObject {
             bands: bands,
             preampDb: preampDb,
             limiterEnabled: limiterEnabled,
-            limiterThresholdDb: limiterThresholdDb
+            limiterThresholdDb: limiterThresholdDb,
+            spatialEnabled: enabled && currentSpatialEnabled, spatialMix: currentSpatialMix
         )
 
         do {
@@ -445,11 +369,89 @@ class PresetManager: ObservableObject {
         applyCurrentState()
     }
 
+    func updateBandEnabled(index: Int, enabled: Bool) {
+        guard (0..<currentBandCount).contains(index) else { return }
+        currentBandEnabled[index] = enabled
+        markCustomIfNeeded()
+        applyCurrentStateToAudio()
+    }
+
+    /// Import into the preset library, then apply without changing global bypass.
+    func importAutoEQ(from url: URL) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: AutoEQCodec.maximumFileSize + 1) ?? Data()
+        guard data.count <= AutoEQCodec.maximumFileSize,
+              let text = String(data: data, encoding: .utf8) else {
+            throw AutoEQError.invalid("Choose a UTF-8 AutoEQ file smaller than 1 MB.")
+        }
+        var preset = try AutoEQCodec.decode(text, name: url.deletingPathExtension().lastPathComponent)
+        preset.name = generateUniqueName(preset.name)
+        try savePreset(preset)
+        applyPreset(userPresets.first(where: { $0.name == preset.name }) ?? preset)
+    }
+
+    func exportAutoEQ(to url: URL) throws {
+        try AutoEQCodec.encode(configuredPreset()).write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Configuration rather than the temporary flat preset sent during bypass.
+    func configuredPreset() -> EQPreset {
+        let bands = (0..<currentBandCount).map { index in
+            EQBand(frequencyHz: currentFrequencies[index], gainDb: currentBands[index],
+                qFactor: currentQFactors[index], filterType: currentFilterTypes[index],
+                enabled: currentBandEnabled[index])
+        }
+        return EQPreset(name: currentPreset?.name ?? Self.customPresetName, bands: bands,
+            preampDb: currentPreampDb, limiterEnabled: currentLimiterEnabled,
+            limiterThresholdDb: currentLimiterThresholdDb,
+            spatialEnabled: currentSpatialEnabled, spatialMix: currentSpatialMix)
+    }
+
+    /// Add a neutral filter without changing the existing response.
+    func addBand() {
+        guard currentBandCount < EQPreset.maximumBands else { return }
+        let index = currentBandCount
+        if index == currentBands.count {
+            currentBands.append(0)
+            currentFrequencies.append(1000)
+            currentQFactors.append(1)
+            currentFilterTypes.append(.peak)
+            currentBandEnabled.append(true)
+        } else {
+            currentBands[index] = 0
+            currentFrequencies[index] = 1000
+            currentQFactors[index] = 1
+            currentFilterTypes[index] = .peak
+            currentBandEnabled[index] = true
+        }
+        currentBandCount += 1
+        focusedBandIndex = index
+        markCustomIfNeeded()
+        applyCurrentStateToAudio()
+    }
+
+    func removeBand(at index: Int) {
+        guard currentBandCount > 1, (0..<currentBandCount).contains(index) else { return }
+        currentBands.remove(at: index)
+        currentFrequencies.remove(at: index)
+        currentQFactors.remove(at: index)
+        currentFilterTypes.remove(at: index)
+        currentBandEnabled.remove(at: index)
+        currentBandCount -= 1
+        if let focused = focusedBandIndex, focused >= 0 {
+            focusedBandIndex = focused == index ? nil : (focused > index ? focused - 1 : focused)
+        }
+        markCustomIfNeeded()
+        applyCurrentStateToAudio()
+    }
+
     // MARK: - Band Advanced Settings
 
     /// Update Q factor for a specific band
     func updateBandQ(index: Int, qFactor: Float) {
-        guard index >= 0 && index < 10 else { return }
+        guard (0..<currentBandCount).contains(index) else { return }
+        currentBandEnabled[index] = true
         currentQFactors[index] = max(0.1, min(10.0, qFactor))
         markCustomIfNeeded()
         resetInactivityTimer()
@@ -458,7 +460,8 @@ class PresetManager: ObservableObject {
 
     /// Update filter type for a specific band
     func updateBandFilterType(index: Int, filterType: FilterType) {
-        guard index >= 0 && index < 10 else { return }
+        guard (0..<currentBandCount).contains(index) else { return }
+        currentBandEnabled[index] = true
         currentFilterTypes[index] = filterType
         markCustomIfNeeded()
         resetInactivityTimer()
@@ -467,10 +470,24 @@ class PresetManager: ObservableObject {
 
     /// Update frequency for a specific band
     func updateBandFrequency(index: Int, frequencyHz: Float) {
-        guard index >= 0 && index < 10 else { return }
+        guard (0..<currentBandCount).contains(index) else { return }
+        currentBandEnabled[index] = true
         currentFrequencies[index] = max(20, min(20000, frequencyHz))
         markCustomIfNeeded()
         resetInactivityTimer()
+        applyCurrentStateToAudio()
+    }
+
+    func updateSpatialEnabled(_ enabled: Bool) {
+        currentSpatialEnabled = enabled
+        markCustomIfNeeded()
+        applyCurrentStateToAudio()
+    }
+
+    func updateSpatialMix(_ amount: Float) {
+        guard amount.isFinite else { return }
+        currentSpatialMix = max(0, min(1, amount))
+        markCustomIfNeeded()
         applyCurrentStateToAudio()
     }
 
@@ -566,23 +583,16 @@ class PresetManager: ObservableObject {
 
     /// Generate a unique preset name by appending numbers if needed
     func generateUniqueName(_ baseName: String) -> String {
-        let allPresetNames = Set((bundledPresets + userPresets).map { $0.name })
-
-        // If name doesn't exist, return as-is
-        if !allPresetNames.contains(baseName) {
-            return baseName
-        }
-
-        // Find next available number
+        let base = String(baseName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(64))
+        let existing = Set((bundledPresets + userPresets).map { sanitizeFilename($0.name) })
+        if base != Self.customPresetName && !existing.contains(sanitizeFilename(base)) { return base }
         var counter = 2
-        var candidateName = "\(baseName) \(counter)"
-
-        while allPresetNames.contains(candidateName) {
+        while true {
+            let suffix = " \(counter)"
+            let candidate = String(base.prefix(64 - suffix.count)) + suffix
+            if !existing.contains(sanitizeFilename(candidate)) { return candidate }
             counter += 1
-            candidateName = "\(baseName) \(counter)"
         }
-
-        return candidateName
     }
 
     /// Save current EQ state as a custom preset
@@ -598,25 +608,8 @@ class PresetManager: ObservableObject {
         // Generate unique name if needed
         let finalName = generateUniqueName(trimmedName)
 
-        // Build preset from current bands (preserving advanced settings)
-        let bands: [EQBand] = currentFrequencies.enumerated().map { index, frequency in
-            let gain = currentBands[index]
-            return EQBand(
-                frequencyHz: frequency,
-                gainDb: gain,
-                qFactor: currentQFactors[index],
-                filterType: currentFilterTypes[index],
-                enabled: abs(gain) > 0.01
-            )
-        }
-
-        let newPreset = EQPreset(
-            name: finalName,
-            bands: bands,
-            preampDb: currentPreampDb,
-            limiterEnabled: currentLimiterEnabled,
-            limiterThresholdDb: currentLimiterThresholdDb
-        )
+        var newPreset = configuredPreset()
+        newPreset.name = finalName
 
         // Save to disk (this reloads all presets, creating new instances)
         try savePreset(newPreset)

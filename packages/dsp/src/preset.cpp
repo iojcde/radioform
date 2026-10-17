@@ -14,16 +14,16 @@ void radioform_dsp_preset_init_flat(radioform_preset_t* preset) {
     std::memset(preset, 0, sizeof(radioform_preset_t));
 
     // Initialize with flat response (all bands disabled)
-    preset->num_bands = RADIOFORM_MAX_BANDS;
+    preset->num_bands = RADIOFORM_DEFAULT_BANDS;
 
     // Default 10-band EQ frequencies (standard graphic EQ)
-    const float default_frequencies[RADIOFORM_MAX_BANDS] = {
+    const float default_frequencies[RADIOFORM_DEFAULT_BANDS] = {
         32.0f, 64.0f, 125.0f, 250.0f, 500.0f,
         1000.0f, 2000.0f, 4000.0f, 8000.0f, 16000.0f
     };
 
     for (uint32_t i = 0; i < RADIOFORM_MAX_BANDS; i++) {
-        preset->bands[i].frequency_hz = default_frequencies[i];
+        preset->bands[i].frequency_hz = i < RADIOFORM_DEFAULT_BANDS ? default_frequencies[i] : 1000.0f;
         preset->bands[i].gain_db = 0.0f;
         preset->bands[i].q_factor = 1.0f; // Default Q
         preset->bands[i].type = RADIOFORM_FILTER_PEAK;
@@ -31,6 +31,8 @@ void radioform_dsp_preset_init_flat(radioform_preset_t* preset) {
     }
 
     // Initialize global settings
+    preset->spatial_enabled = false;
+    preset->spatial_mix = 0.4f;
     preset->preamp_db = 0.0f;
     preset->limiter_enabled = false; // Disabled for flat preset (transparent testing)
     preset->limiter_threshold_db = -0.1f; // Just below 0dB
@@ -83,6 +85,10 @@ radioform_error_t radioform_dsp_preset_validate(const radioform_preset_t* preset
 
     // Check for NaN or infinity on global parameters
     if (!std::isfinite(preset->preamp_db) || !std::isfinite(preset->limiter_threshold_db)) {
+        return RADIOFORM_ERROR_INVALID_PARAM;
+    }
+
+    if (!std::isfinite(preset->spatial_mix) || preset->spatial_mix < 0 || preset->spatial_mix > 1) {
         return RADIOFORM_ERROR_INVALID_PARAM;
     }
 

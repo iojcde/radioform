@@ -1,5 +1,6 @@
 module CRadioformAudio {
     header "RFSharedAudio.h"
     header "RFSharedMemoryWrapper.h"
+    header "RFSecureIPC.h"
     export *
 }

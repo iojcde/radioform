@@ -180,7 +180,15 @@ Single producer (driver) and single consumer (host), with monotonically increasi
 - Overflow (`used + write > capacity`): advance `read_index` and increment `overrun_count`
 - Underrun on host read: host emits silence and increments `underrun_count`
 
-`rf_ring_write()` accepts float32 input and stores samples in negotiated shared format. `rf_ring_read()` outputs float32 for host-side processing.
+`rf_ring_write()` accepts float32 input and stores samples in negotiated shared format. `rf_ring_read()` outputs float32 for host-side processing. Both take a validated, process-private `RFAudioLayout` and the caller's sample-buffer length. They never use mutable shared header fields for payload addressing. Mappings are unmapped using their original allocation lengths.
+
+### IPC access restrictions
+
+IPC files have mode `0600` and a named ACL for `_coreaudiod` (read/write for audio, read-only for control). The driver opens with `O_NOFOLLOW`, validates the opened descriptor, and accepts only regular, singly linked files owned by the active console user, with bounded lengths and no group/other permissions. The host uses exclusive creation for audio files and atomically publishes private control files. Invalid metadata, truncated headers and malformed control records are rejected.
+
+Install the updated host and driver together. The driver rejects the world-accessible files produced by older hosts. Radioform IPC follows the active console session; simultaneous hosts from different login sessions are not supported.
+
+Run `bash tools/test_security.sh` from the repository root on macOS for sanitizer, ACL, symlink and installer-quoting regression tests. AppleScript compilation requires access to the standard scripting additions. The tests never execute privileged installation commands.
 
 ## Health monitoring
 
@@ -247,7 +255,7 @@ sudo killall coreaudiod
 ## Logging
 
 - `os_log` subsystem: `com.radioform.driver`
-- Fallback file log: `/tmp/radioform-driver-debug.log`
+- Debug messages also use unified logging; the driver does not write a `/tmp` log.
 
 Example unified log query:
 

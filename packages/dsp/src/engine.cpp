@@ -11,6 +11,7 @@
 #include "smoothing.h"
 #include "limiter.h"
 #include "dc_blocker.h"
+#include "fixed_spatial.h"
 #include "cpu_util.h"
 
 #include <cstring>
@@ -48,6 +49,7 @@ struct radioform_dsp_engine {
 
     // DC Blocker (prevents DC offset buildup)
     StereoDCBlocker dc_blocker;
+    FixedSpatial spatial;
 
     // Bypass (atomic for lock-free realtime control)
     std::atomic<bool> bypass;
@@ -93,6 +95,8 @@ struct radioform_dsp_engine {
         // Initialize limiter
         limiter.init(-0.1f); // -0.1 dB threshold
 
+        spatial.init(static_cast<float>(sample_rate));
+
         // Initialize DC blocker (5Hz high-pass)
         dc_blocker.init(static_cast<float>(sample_rate), 5.0f);
     }
@@ -130,6 +134,7 @@ void radioform_dsp_reset(radioform_dsp_engine_t* engine) {
 
     // Reset DC blocker
     engine->dc_blocker.reset();
+    engine->spatial.reset();
 
     // Reset statistics
     engine->frames_processed.store(0);
@@ -155,6 +160,8 @@ radioform_error_t radioform_dsp_set_sample_rate(
 
     // Reinitialize DC blocker with new sample rate
     engine->dc_blocker.init(static_cast<float>(sample_rate), 5.0f);
+
+    engine->spatial.init(static_cast<float>(sample_rate));
 
     // Recalculate filter coefficients
     return radioform_dsp_apply_preset(engine, &engine->current_preset);
@@ -219,6 +226,8 @@ void radioform_dsp_process_interleaved(
                 engine->bands[band].processSample(left, right, &left, &right);
             }
         }
+
+        engine->spatial.process(left, right);
 
         // Remove DC offset (prevents buildup from cascaded filters)
         engine->dc_blocker.processStereo(left, right, &left, &right);
@@ -348,6 +357,10 @@ void radioform_dsp_process_planar(
         }
     }
 
+    for (uint32_t i = 0; i < num_frames; i++) {
+        engine->spatial.process(output_left[i], output_right[i]);
+    }
+
     // Remove DC offset (prevents buildup from cascaded filters)
     engine->dc_blocker.processBuffer(
         output_left, output_right,
@@ -443,6 +456,8 @@ radioform_error_t radioform_dsp_apply_preset(
     // Update preamp
     float preamp_gain = db_to_gain(preset->preamp_db);
     engine->preamp_smoother.setTarget(preamp_gain);
+
+    engine->spatial.setAmount(preset->spatial_enabled, preset->spatial_mix);
 
     // Update limiter
     engine->limiter_enabled = preset->limiter_enabled;

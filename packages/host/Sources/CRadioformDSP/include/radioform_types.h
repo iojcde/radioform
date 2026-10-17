@@ -20,7 +20,8 @@ extern "C" {
 /**
  * @brief Maximum number of EQ bands supported
  */
-#define RADIOFORM_MAX_BANDS 10
+#define RADIOFORM_MAX_BANDS 32
+#define RADIOFORM_DEFAULT_BANDS 10
 
 /**
  * @brief Filter types for EQ bands
@@ -51,11 +52,13 @@ typedef struct {
  */
 typedef struct {
     radioform_band_t bands[RADIOFORM_MAX_BANDS];  // Array of EQ bands
-    uint32_t num_bands;             // Number of active bands (1-10)
+    uint32_t num_bands;             // Number of active bands (1-RADIOFORM_MAX_BANDS)
     float preamp_db;                // Global preamp gain (-12.0 to +12.0)
     bool limiter_enabled;           // Enable soft limiter after EQ
     float limiter_threshold_db;     // Limiter threshold (-6.0 to 0.0)
     char name[64];                  // Preset name (null-terminated)
+    bool spatial_enabled;          // Fixed virtual-speaker approximation
+    float spatial_mix;             // Dry/wet amount (0 to 1)
 } radioform_preset_t;
 
 /**
@@ -79,6 +82,8 @@ typedef struct {
     float cpu_load_percent;         // Estimated CPU load (0.0 - 100.0)
     bool bypass_active;             // Currently in bypass mode
     uint32_t sample_rate;           // Current sample rate
+    float peak_left_db;             // Current peak level left channel (dBFS)
+    float peak_right_db;            // Current peak level right channel (dBFS)
 } radioform_stats_t;
 
 #ifdef __cplusplus

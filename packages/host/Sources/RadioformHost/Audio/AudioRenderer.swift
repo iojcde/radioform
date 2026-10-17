@@ -58,12 +58,14 @@ class AudioRenderer {
             print("[AudioRenderer] First render: frames=\(frameCount) buffers=\(numBuffers) sizes=\(sizes)")
         }
 
-        let sharedMem: UnsafeMutablePointer<RFSharedAudio>?
+        let sharedMem: SharedAudioMapping?
 
         if let activeUID = proxyManager.activeProxyUID {
             sharedMem = memoryManager.getMemory(for: activeUID)
         } else {
-            sharedMem = memoryManager.getFirstMemory()
+            // A physical output selected without EQ must never consume another
+            // output's ring buffer (including when all outputs are excluded).
+            sharedMem = nil
         }
 
         guard let mem = sharedMem else {
@@ -96,7 +98,9 @@ class AudioRenderer {
             }
             framesRead = frameCount
         } else {
-            framesRead = rf_ring_read(mem, &tempBuffer, frameCount)
+            var layout = mem.layout
+            let sampleCount = tempBuffer.count
+            framesRead = rf_ring_read(mem.pointer, &layout, &tempBuffer, frameCount, sampleCount)
         }
 
         if debugRenderCount < 5 {

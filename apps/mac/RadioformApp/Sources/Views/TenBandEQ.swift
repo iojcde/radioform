@@ -4,7 +4,9 @@ import AppKit
 struct TenBandEQ: View {
     @ObservedObject private var presetManager = PresetManager.shared
 
-    let displayOrder = [10, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    private var displayOrder: [Int] {
+        [PresetManager.preampFocusIndex] + Array(0..<presetManager.currentBandCount)
+    }
 
     /// Format frequency value for band labels
     private func formatFrequency(_ hz: Float) -> String {
@@ -20,74 +22,89 @@ struct TenBandEQ: View {
     var body: some View {
         VStack(spacing: 8) {
             // Grid of vertical sliders with background grid lines
-            ZStack {
-                // Horizontal grid lines
-                GeometryReader { geometry in
-                    let sliderHeight: CGFloat = 100
-                    let topPadding: CGFloat = 0
+            ScrollView(.horizontal, showsIndicators: presetManager.currentBandCount > 10) {
+                ZStack(alignment: .top) {
+                    // Horizontal grid lines
+                    GeometryReader { geometry in
+                        let sliderHeight: CGFloat = 100
+                        let topPadding: CGFloat = 0
 
-                    // Draw grid lines every 3 dB (-12 to +12 = 9 lines)
-                    ForEach(0..<9, id: \.self) { index in
-                        let dbValue = 12 - (Float(index) * 3)
-                        let yPosition = topPadding + (sliderHeight * CGFloat(index) / 8.0)
-                        let isCenterLine = (dbValue == 0)
+                        // Draw grid lines every 3 dB (-12 to +12 = 9 lines)
+                        ForEach(0..<9, id: \.self) { index in
+                            let dbValue = 12 - (Float(index) * 3)
+                            let yPosition = topPadding + (sliderHeight * CGFloat(index) / 8.0)
+                            let isCenterLine = (dbValue == 0)
 
-                        Rectangle()
-                            .fill(Color(NSColor.separatorColor).opacity(isCenterLine ? 0.3 : 0.15))
-                            .frame(height: 1)
-                            .offset(y: yPosition)
-                    }
-                }
-                .frame(height: 100)
-
-                // Sliders on top of grid
-                HStack(spacing: 0) {
-                    ForEach(displayOrder, id: \.self) { index in
-                        VStack(spacing: 4) {
-                            VerticalSlider(
-                                value: index < 10
-                                    ? Binding(
-                                        get: { presetManager.currentBands[index] },
-                                        set: { newValue in
-                                            presetManager.updateBand(index: index, gainDb: newValue)
-                                        }
-                                    )
-                                    : Binding(
-                                        get: { presetManager.currentPreampDb },
-                                        set: { newValue in
-                                            presetManager.updatePreamp(gainDb: newValue)
-                                        }
-                                    ),
-                                range: -12...12,
-                                isFocused: presetManager.focusedBandIndex == index,
-                                onDoubleTap: {
-                                    presetManager.toggleFocusedBand(index)
-                                }
-                            )
-                            .frame(width: 20, height: 100)
-
-                            // Frequency label
-                            Text(index == 10 ? "Pre" : formatFrequency(presetManager.currentFrequencies[index]))
-                            .font(.system(size: 9))
-                            .foregroundColor(index == 10 ? .accentColor.opacity(0.7) : .secondary)
-                            .frame(minWidth: 22)
-                        }
-                        .padding(.horizontal, 3)
-
-                        if index == 10 {
-                            // Subtle separator after preamp knob
                             Rectangle()
-                                .fill(Color(NSColor.separatorColor).opacity(0.3))
-                                .frame(width: 1, height: 80)
-                                .padding(.horizontal, 4)
+                                .fill(Color(NSColor.separatorColor).opacity(isCenterLine ? 0.3 : 0.15))
+                                .frame(height: 1)
+                                .offset(y: yPosition)
+                        }
+                    }
+                    .frame(height: 100)
+
+                    // Sliders on top of grid
+                    HStack(spacing: 0) {
+                        ForEach(displayOrder, id: \.self) { index in
+                            VStack(spacing: 4) {
+                                VerticalSlider(
+                                    value: index != PresetManager.preampFocusIndex
+                                        ? Binding(
+                                            get: { presetManager.currentBands[index] },
+                                            set: { newValue in
+                                                presetManager.updateBand(index: index, gainDb: newValue)
+                                            }
+                                        )
+                                        : Binding(
+                                            get: { presetManager.currentPreampDb },
+                                            set: { newValue in
+                                                presetManager.updatePreamp(gainDb: newValue)
+                                            }
+                                        ),
+                                    range: -12...12,
+                                    isFocused: presetManager.focusedBandIndex == index,
+                                    onDoubleTap: {
+                                        presetManager.toggleFocusedBand(index)
+                                    }
+                                )
+                                .frame(width: 20, height: 100)
+                                .opacity(index != PresetManager.preampFocusIndex && !presetManager.currentBandEnabled[index] ? 0.65 : 1)
+                                .help(index != PresetManager.preampFocusIndex && !presetManager.currentBandEnabled[index] ? "Filter disabled. Adjust to enable." : "Double-click for filter settings.")
+
+                                Text(String(format: "%+.1f", index == PresetManager.preampFocusIndex
+                                    ? presetManager.currentPreampDb : presetManager.currentBands[index]))
+                                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                                    .frame(width: 24)
+                                    .accessibilityLabel("Gain in decibels")
+                                    .help("Gain (dB)")
+
+                                // Frequency label
+                                Text(index == PresetManager.preampFocusIndex ? "Pre" : formatFrequency(presetManager.currentFrequencies[index]))
+                                .font(.system(size: 9))
+                                .foregroundColor(index == PresetManager.preampFocusIndex ? .accentColor.opacity(0.7) : .secondary)
+                                .frame(minWidth: 22)
+                            }
+                            .frame(maxWidth: .infinity)
+
+                            if index == PresetManager.preampFocusIndex {
+                                // Subtle separator after preamp knob
+                                Rectangle()
+                                    .fill(Color(NSColor.separatorColor).opacity(0.3))
+                                    .frame(width: 1, height: 80)
+                                    .padding(.horizontal, 4)
+                            }
                         }
                     }
                 }
+                .frame(width: max(280, CGFloat(presetManager.currentBandCount + 1) * 28))
+                .padding(.vertical, 12)
             }
+            .frame(height: 160)
             .background(
-                // Scroll wheel receiver for Q factor — active when a band (0-9) is focused
+                // Scroll wheel receiver for Q factor — active when a filter is focused
                 Group {
-                    if let focusedIndex = presetManager.focusedBandIndex, focusedIndex < 10 {
+                    if let focusedIndex = presetManager.focusedBandIndex, (0..<presetManager.currentBandCount).contains(focusedIndex) {
                         ScrollWheelReceiver { delta in
                             let currentQ = presetManager.currentQFactors[focusedIndex]
                             let newQ = currentQ + Float(delta) * 0.1
@@ -101,12 +118,30 @@ struct TenBandEQ: View {
                 presetManager.setFocusedBand(nil)
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+
+            HStack {
+                Button { presetManager.addBand() } label: {
+                    Label("Add Filter", systemImage: "plus")
+                }
+                .disabled(presetManager.currentBandCount >= EQPreset.maximumBands)
+                Spacer()
+                if let index = presetManager.focusedBandIndex,
+                   (0..<presetManager.currentBandCount).contains(index) {
+                    Button { presetManager.removeBand(at: index) } label: {
+                        Label("Remove Filter", systemImage: "minus")
+                    }
+                    .disabled(presetManager.currentBandCount <= 1)
+                }
+            }
+            .font(.caption)
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 8)
         }
     }
 }
 
 struct VerticalSlider: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Binding var value: Float
     let range: ClosedRange<Float>
     let isFocused: Bool
@@ -146,7 +181,7 @@ struct VerticalSlider: View {
             ZStack(alignment: .bottom) {
                 // Track background
                 RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(NSColor.separatorColor))
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.35 : 0.18))
                     .frame(width: 4)
 
                 // Center line (0 dB)
@@ -176,8 +211,8 @@ struct VerticalSlider: View {
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color(NSColor.controlBackgroundColor),
-                                    Color(NSColor.controlBackgroundColor).opacity(0.9)
+                                    colorScheme == .dark ? Color(white: 0.80) : Color(NSColor.controlBackgroundColor),
+                                    colorScheme == .dark ? Color(white: 0.58) : Color(NSColor.controlBackgroundColor).opacity(0.9)
                                 ],
                                 startPoint: .top,
                                 endPoint: .bottom
@@ -189,10 +224,10 @@ struct VerticalSlider: View {
                                     (isFocused
                                         ? isDragging
                                             ? Color.white
-                                            : Color.accentColor.opacity(0.6)
-                                        : Color(NSColor.separatorColor).opacity(0.8)),
+                                            : Color.accentColor
+                                        : Color.primary.opacity(colorScheme == .dark ? 0.65 : 0.3)),
                                     style: StrokeStyle(
-                                        lineWidth: isFocused ? 1 : 0.5,
+                                        lineWidth: isFocused ? 1.5 : 1,
 
                                         // Dotted border indicates precise dragging mode
                                         dash: isDragging && isPreciseDrag ? [2, 2] : []
@@ -204,7 +239,7 @@ struct VerticalSlider: View {
                     if isFocused {
                         Text(knobDisplayText)
                             .font(.system(size: 7, weight: .medium, design: .rounded))
-                            .foregroundColor(.primary.opacity(0.8))
+                            .foregroundColor(colorScheme == .dark ? .black : .primary.opacity(0.8))
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
                             // Reduce horizontal text movement when dragging

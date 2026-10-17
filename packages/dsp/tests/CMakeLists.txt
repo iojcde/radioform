@@ -11,6 +11,7 @@ add_executable(radioform_dsp_tests
     test_preset.cpp
     test_engine.cpp
     test_frequency_response.cpp
+    test_fixed_spatial.cpp
 )
 
 # Link against DSP library

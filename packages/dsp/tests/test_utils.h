@@ -21,10 +21,10 @@ struct TestStats {
     int failed = 0;
 };
 
-static TestStats g_test_stats;
+inline TestStats g_test_stats;
 
 // Test registry - using explicit function to avoid static init issues
-static std::vector<std::pair<std::string, std::function<void()>>>& get_test_registry() {
+inline std::vector<std::pair<std::string, std::function<void()>>>& get_test_registry() {
     static std::vector<std::pair<std::string, std::function<void()>>> registry;
     return registry;
 }

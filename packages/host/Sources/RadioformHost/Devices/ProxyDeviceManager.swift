@@ -13,7 +13,20 @@ class ProxyDeviceManager {
     private let volumeForwardEpsilon: Float32 = 0.001
     private var lastForwardedProxyVolume: Float32?
 
-    var activeProxyUID: String?
+    private var routingLock = os_unfair_lock()
+    private var selectedProxyUID: String?
+    var activeProxyUID: String? {
+        get {
+            os_unfair_lock_lock(&routingLock)
+            defer { os_unfair_lock_unlock(&routingLock) }
+            return selectedProxyUID
+        }
+        set {
+            os_unfair_lock_lock(&routingLock)
+            selectedProxyUID = newValue
+            os_unfair_lock_unlock(&routingLock)
+        }
+    }
     var activePhysicalDeviceID: AudioDeviceID = 0
     var activeProxyDeviceID: AudioDeviceID = 0
 
@@ -103,6 +116,8 @@ class ProxyDeviceManager {
         print("[AutoSelect] Current default device: \(name) (\(uid))")
 
         if name.contains("Radioform") {
+            guard restoreExcludedOutput() else { return }
+            guard getCurrentDefaultDevice() == currentDeviceID else { return }
             // If we're already on a proxy, make sure we map it to the physical device.
             if let physicalUID = uid.components(separatedBy: "-radioform").first,
                let physicalDevice = registry.find(uid: physicalUID) {
@@ -118,7 +133,7 @@ class ProxyDeviceManager {
             return
         }
 
-        guard registry.find(uid: uid) != nil else {
+        guard registry.isEQEnabled(uid: uid), registry.find(uid: uid) != nil else {
             print("[AutoSelect] Current device not in registry - no proxy available")
             return
         }
@@ -177,6 +192,9 @@ class ProxyDeviceManager {
     }
 
     func handleProxySelection(_ proxyUID: String, deviceID: AudioDeviceID) {
+        guard restoreExcludedOutput() else { return }
+        if proxyUID.hasSuffix("-radioform"),
+           !registry.isEQEnabled(uid: String(proxyUID.dropLast("-radioform".count))) { return }
         if let physicalUID = proxyUID.components(separatedBy: "-radioform").first,
            let physicalDevice = registry.find(uid: physicalUID) {
             print("Routing to: \(physicalDevice.name)")
@@ -201,6 +219,10 @@ class ProxyDeviceManager {
     }
 
     func handlePhysicalSelection(_ physicalUID: String) {
+        guard registry.isEQEnabled(uid: physicalUID) else {
+            clearActiveProxy()
+            return
+        }
         // Prevent rapid re-triggering
         let now = Date()
         guard now.timeIntervalSince(lastSwitchTime) > switchCooldown else {
@@ -224,6 +246,7 @@ class ProxyDeviceManager {
             isAutoSwitching = true
             lastSwitchTime = now
             if setDefaultOutputDevice(proxyID) {
+                activeProxyUID = physicalUID
                 activeProxyDeviceID = proxyID
                 activePhysicalDeviceID = physicalDevice.id
                 startVolumeForwarding(proxyDeviceID: proxyID)
@@ -240,7 +263,26 @@ class ProxyDeviceManager {
         // Note: isAutoSwitching is reset in handleProxySelection after delay
     }
 
-    func restorePhysicalDevice() -> Bool {
+    private func clearActiveProxy() {
+        stopVolumeForwarding()
+        activeProxyUID = nil
+        activeProxyDeviceID = 0
+        activePhysicalDeviceID = 0
+        isAutoSwitching = false
+    }
+
+    /// Returns false if an excluded proxy is active and restoration failed.
+    func restoreExcludedOutput() -> Bool {
+        guard let current = getCurrentDefaultDevice(), let uid = getDeviceUID(current),
+              uid.hasSuffix("-radioform") else { return true }
+        let physicalUID = String(uid.dropLast("-radioform".count))
+        guard !registry.isEQEnabled(uid: physicalUID) else { return true }
+        guard restorePhysicalDevice(waitForSwitch: false) else { return false }
+        clearActiveProxy()
+        return true
+    }
+
+    func restorePhysicalDevice(waitForSwitch: Bool = true) -> Bool {
         stopVolumeForwarding()
 
         guard let currentDeviceID = getCurrentDefaultDevice(),
@@ -273,7 +315,8 @@ class ProxyDeviceManager {
 
         if result == noErr {
             print("[Cleanup] ✓ Restored to \(physicalDevice.name)")
-            Thread.sleep(forTimeInterval: RadioformConfig.physicalDeviceSwitchDelay)
+            clearActiveProxy()
+            if waitForSwitch { Thread.sleep(forTimeInterval: RadioformConfig.physicalDeviceSwitchDelay) }
             return true
         }
 

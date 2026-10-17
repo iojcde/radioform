@@ -76,7 +76,7 @@ func main() {
     deviceMonitor.registerListeners()
 
     print("[Step 3] Creating shared memory files...")
-    memoryManager.createMemory(for: devices)
+    memoryManager.createMemory(for: deviceRegistry.eqDevices)
 
     print("[Step 4] Writing control file...")
     deviceRegistry.writeControlFile()
@@ -145,6 +145,7 @@ func main() {
     }
 
     presetMonitor.startMonitoring()
+    deviceMonitor.startMonitoringPreferences()
 
     setupSignalHandlers()
 
@@ -177,6 +178,7 @@ func setupSignalHandlers() {
 func cleanup() {
     print("\n[Cleanup] Starting cleanup process...")
 
+    deviceMonitor.stopMonitoringPreferences()
     sleepWakeMonitor.stop()
     memoryManager.stopHeartbeat()
 

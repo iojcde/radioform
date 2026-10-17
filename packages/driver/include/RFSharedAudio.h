@@ -117,7 +117,7 @@ typedef struct {
 static inline size_t rf_shared_audio_size(uint32_t capacity_frames,
                                               uint32_t channels,
                                               uint32_t bytes_per_sample) {
-    return sizeof(RFSharedAudio) + (capacity_frames * channels * bytes_per_sample);
+    return sizeof(RFSharedAudio) + ((size_t)capacity_frames * channels * bytes_per_sample);
 }
 
 /**
@@ -208,6 +208,43 @@ static inline uint32_t rf_bytes_per_sample(RFAudioFormat format) {
     }
 }
 
+// A process-private snapshot. Never store this alongside the shared header.
+// All payload addressing and unmapping must use these validated dimensions.
+typedef struct {
+    size_t mapped_size;
+    uint32_t sample_rate;
+    uint32_t channels;
+    uint32_t format;
+    uint32_t bytes_per_sample;
+    uint32_t bytes_per_frame;
+    uint32_t capacity;
+} RFAudioLayout;
+
+static inline bool rf_audio_layout_snapshot(const RFSharedAudio* mem,
+                                            size_t mapped_size,
+                                            RFAudioLayout* result) {
+    if (!mem || !result || mapped_size < sizeof(RFSharedAudio)) return false;
+    const uint32_t version = mem->protocol_version;
+    const uint32_t header_size = mem->header_size;
+    const uint32_t duration = mem->ring_duration_ms;
+    RFAudioLayout layout = {mapped_size, mem->sample_rate, mem->channels,
+        mem->format, mem->bytes_per_sample, mem->bytes_per_frame,
+        mem->ring_capacity_frames};
+    if (version != RF_AUDIO_PROTOCOL_VERSION || header_size != sizeof(RFSharedAudio) ||
+        !rf_is_sample_rate_supported(layout.sample_rate) ||
+        layout.channels == 0 || layout.channels > RF_MAX_CHANNELS ||
+        layout.format > RF_FORMAT_INT32 ||
+        layout.bytes_per_sample != rf_bytes_per_sample((RFAudioFormat)layout.format) ||
+        layout.bytes_per_frame != layout.channels * layout.bytes_per_sample ||
+        duration < RF_RING_DURATION_MS_MIN || duration > RF_RING_DURATION_MS_MAX ||
+        layout.capacity != rf_frames_for_duration(layout.sample_rate, duration) ||
+        layout.capacity > (mapped_size - sizeof(RFSharedAudio)) / layout.bytes_per_frame) {
+        return false;
+    }
+    *result = layout;
+    return true;
+}
+
 /**
  * Check if both sides are connected and healthy
  */
@@ -234,30 +271,37 @@ static inline bool rf_is_connection_healthy(const RFSharedAudio* mem) {
  */
 static inline uint32_t rf_ring_write(
     RFSharedAudio* mem,
+    const RFAudioLayout* layout,
     const float* input_frames,  // Always float32 input
-    uint32_t num_frames)
+    uint32_t num_frames,
+    size_t buffer_samples)
 {
+    if (!mem || !layout || layout->capacity == 0 || layout->channels == 0 ||
+        num_frames > buffer_samples / layout->channels) return 0;
     uint64_t write_idx = atomic_load(&mem->write_index);
     uint64_t read_idx = atomic_load(&mem->read_index);
-    uint32_t capacity = mem->ring_capacity_frames;
+    uint32_t capacity = layout->capacity;
 
     // Check for overflow - advance read_index to keep producer timeline intact
+    if (read_idx > write_idx || write_idx - read_idx > capacity ||
+        num_frames > UINT64_MAX - write_idx) return 0;
     uint64_t used = write_idx - read_idx;
     if (used + num_frames > capacity) {
-        uint32_t frames_to_drop = (uint32_t)((used + num_frames) - capacity);
+        uint64_t frames_to_drop = (used + num_frames) - capacity;
         atomic_store(&mem->read_index, read_idx + frames_to_drop);
         atomic_fetch_add(&mem->overrun_count, 1);
     }
 
     // Write with format conversion
-    for (uint32_t frame = 0; frame < num_frames; frame++) {
+    uint32_t first_frame = num_frames > capacity ? num_frames - capacity : 0;
+    for (uint32_t frame = first_frame; frame < num_frames; frame++) {
         uint32_t ring_pos = (uint32_t)((write_idx + frame) % capacity);
-        uint8_t* dest = &mem->audio_data[ring_pos * mem->bytes_per_frame];
+        uint8_t* dest = &mem->audio_data[ring_pos * layout->bytes_per_frame];
 
-        for (uint32_t ch = 0; ch < mem->channels; ch++) {
-            float sample = input_frames[frame * mem->channels + ch];
+        for (uint32_t ch = 0; ch < layout->channels; ch++) {
+            float sample = input_frames[frame * layout->channels + ch];
 
-            switch (mem->format) {
+            switch (layout->format) {
                 case RF_FORMAT_FLOAT32: {
                     float* ptr = (float*)dest;
                     ptr[ch] = sample;
@@ -311,12 +355,18 @@ static inline uint32_t rf_ring_write(
  */
 static inline uint32_t rf_ring_read(
     RFSharedAudio* mem,
+    const RFAudioLayout* layout,
     float* output_frames,  // Always float32 output
-    uint32_t num_frames)
+    uint32_t num_frames,
+    size_t buffer_samples)
 {
+    if (!mem || !layout || layout->capacity == 0 || layout->channels == 0 ||
+        num_frames > buffer_samples / layout->channels) return 0;
     uint64_t write_idx = atomic_load(&mem->write_index);
     uint64_t read_idx = atomic_load(&mem->read_index);
-    uint32_t capacity = mem->ring_capacity_frames;
+    uint32_t capacity = layout->capacity;
+    if (read_idx > write_idx || write_idx - read_idx > capacity ||
+        num_frames > UINT64_MAX - read_idx) return 0;
     uint32_t available = (uint32_t)(write_idx - read_idx);
 
     uint32_t frames_to_read = (available < num_frames) ? available : num_frames;
@@ -324,12 +374,12 @@ static inline uint32_t rf_ring_read(
     // Read with format conversion
     for (uint32_t frame = 0; frame < frames_to_read; frame++) {
         uint32_t ring_pos = (uint32_t)((read_idx + frame) % capacity);
-        const uint8_t* src = &mem->audio_data[ring_pos * mem->bytes_per_frame];
+        const uint8_t* src = &mem->audio_data[ring_pos * layout->bytes_per_frame];
 
-        for (uint32_t ch = 0; ch < mem->channels; ch++) {
+        for (uint32_t ch = 0; ch < layout->channels; ch++) {
             float sample = 0.0f;
 
-            switch (mem->format) {
+            switch (layout->format) {
                 case RF_FORMAT_FLOAT32: {
                     const float* ptr = (const float*)src;
                     sample = ptr[ch];
@@ -362,7 +412,7 @@ static inline uint32_t rf_ring_read(
                 }
             }
 
-            output_frames[frame * mem->channels + ch] = sample;
+            output_frames[frame * layout->channels + ch] = sample;
         }
     }
 
@@ -370,8 +420,8 @@ static inline uint32_t rf_ring_read(
     if (frames_to_read < num_frames) {
         atomic_fetch_add(&mem->underrun_count, 1);
         for (uint32_t frame = frames_to_read; frame < num_frames; frame++) {
-            for (uint32_t ch = 0; ch < mem->channels; ch++) {
-                output_frames[frame * mem->channels + ch] = 0.0f;
+            for (uint32_t ch = 0; ch < layout->channels; ch++) {
+                output_frames[frame * layout->channels + ch] = 0.0f;
             }
         }
     }

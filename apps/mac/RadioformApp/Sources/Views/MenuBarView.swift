@@ -68,20 +68,44 @@ struct MenuBarView: View {
 
                 // Only show EQ controls and preset dropdown when enabled
                 if presetManager.isEnabled {
-                    // 10-Band EQ + Preamp
+                    // Parametric EQ + Preamp
                     TenBandEQ()
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
 
+                    VStack(spacing: 6) {
+                        Toggle("Fixed Spatial", isOn: Binding(
+                            get: { presetManager.currentSpatialEnabled },
+                            set: { presetManager.updateSpatialEnabled($0) }))
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                            .help("A virtual-speaker effect for headphones, without head tracking. Not Apple's Spatialize Stereo.")
+                        if presetManager.currentSpatialEnabled {
+                            HStack {
+                                Text("Amount")
+                                Slider(value: Binding(
+                                    get: { presetManager.currentSpatialMix },
+                                    set: { presetManager.updateSpatialMix($0) }), in: 0...1)
+                                    .accessibilityLabel("Spatial amount")
+                                Text("\(Int(presetManager.currentSpatialMix * 100))%")
+                                    .monospacedDigit()
+                                    .frame(width: 34, alignment: .trailing)
+                            }
+                        }
+                    }
+                    .font(.system(size: 11))
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
+
                     // Contextual area: band controls (focused) or presets (default)
                     if let focusedIndex = presetManager.focusedBandIndex {
-                        if focusedIndex < 10 {
+                        if (0..<presetManager.currentBandCount).contains(focusedIndex) {
                             // Per-band controls: filter type, frequency, Q factor
                             BandControls(bandIndex: focusedIndex)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 6)
                         } else {
-                            // Preamp (index 10): limiter controls
+                            // Preamp: limiter controls
                             LimiterControls()
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 6)
@@ -118,6 +142,17 @@ struct MenuBarView: View {
                         }
                     }
                 }
+
+                AutoEQFileControls()
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+
+                Button("Settings…") {
+                    (NSApp.delegate as? AppDelegate)?.showSettings()
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 11))
+                .padding(.vertical, 4)
 
                 // Footer
                 QuitButton()
@@ -539,6 +574,11 @@ struct BandControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Toggle("Enable filter", isOn: Binding(
+                get: { presetManager.currentBandEnabled[bandIndex] },
+                set: { presetManager.updateBandEnabled(index: bandIndex, enabled: $0) }
+            ))
+            .font(.system(size: 11))
             // Filter
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {

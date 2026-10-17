@@ -37,6 +37,8 @@ enum FilterType: Int, Codable, CaseIterable {
 
 /// Single EQ band matching radioform_band_t
 struct EQBand: Codable, Identifiable, Equatable {
+    static let standardFrequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+
     let id = UUID()
     var frequencyHz: Float       // 20-20000 Hz
     var gainDb: Float           // -12.0 to +12.0 dB

@@ -4,10 +4,11 @@ Digital signal processing core for Radioform. The library provides a C ABI (`inc
 
 ## Features
 
-- 10-band parametric EQ (`RADIOFORM_MAX_BANDS = 10`)
+- Up to 32 parametric EQ bands (`RADIOFORM_MAX_BANDS = 32`), with a 10-band default layout
 - Seven filter types: peak, low shelf, high shelf, low pass, high pass, notch, band pass
 - Stereo processing in interleaved and planar formats
 - Preamp control and optional soft limiter
+- Optional fixed headphone spatial effect (head-shadow crossfeed, short delay, and early reflections; not Apple Spatialize Stereo or measured HRTF rendering)
 - DC blocker stage to reduce offset buildup
 - C ABI with POD types for C / ObjC++ / Swift interop
 - Objective-C++ wrapper (`RadioformDSPEngine`) for Foundation-friendly Swift usage

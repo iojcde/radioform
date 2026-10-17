@@ -13,6 +13,9 @@ void test_preset_validate_invalid_frequency();
 void test_preset_validate_invalid_gain();
 void test_preset_validate_invalid_q();
 
+void test_preset_validate_extended_bands();
+void test_freq_response_last_extended_filter_is_processed();
+
 // Smoothing tests
 void test_smoother_initialization();
 void test_smoother_set_value_immediate();
@@ -49,7 +52,22 @@ void test_freq_response_high_shelf_boosts_treble();
 void test_freq_response_multi_band_eq();
 void test_freq_response_thd_remains_low();
 
+void test_spatial_disabled_is_exact_passthrough();
+void test_spatial_crossfeed_is_delayed_bounded_and_resettable();
+void test_spatial_preserves_mono_balance_and_fades_to_dry();
+void test_spatial_engine_planar_and_interleaved_agree();
+void test_spatial_rejects_invalid_amount();
+void test_spatial_keeps_direct_sound_dominant_and_room_short();
+
 int main(int argc, char** argv) {
+    REGISTER_TEST(spatial_disabled_is_exact_passthrough);
+    REGISTER_TEST(spatial_crossfeed_is_delayed_bounded_and_resettable);
+    REGISTER_TEST(spatial_preserves_mono_balance_and_fades_to_dry);
+    REGISTER_TEST(spatial_engine_planar_and_interleaved_agree);
+    REGISTER_TEST(spatial_rejects_invalid_amount);
+    REGISTER_TEST(spatial_keeps_direct_sound_dominant_and_room_short);
+    REGISTER_TEST(preset_validate_extended_bands);
+    REGISTER_TEST(freq_response_last_extended_filter_is_processed);
     // Register all tests
     REGISTER_TEST(preset_init_flat);
     REGISTER_TEST(preset_validate_valid);

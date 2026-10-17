@@ -68,6 +68,10 @@ Shutdown path:
 - Shared memory per device: `/tmp/radioform-<sanitized-uid>`
 - Preset file: `~/Library/Application Support/Radioform/preset.json`
 
+IPC files are private to the host user with an explicit `_coreaudiod` ACL. Audio files grant the service read/write access; control files grant read access. Creation rejects existing files and symlinks, and control updates use private temporary files plus atomic rename. Buffer dimensions and mapping lengths are retained privately. Render and heartbeat operations retain mappings until they finish, including during device removal. Deploy the updated host and HAL driver together; the driver rejects legacy world-accessible IPC files and files from inactive login sessions.
+
+Output exclusions are shared with the app through `RadioformConfiguration` and persisted in `~/Library/Application Support/Radioform/output-devices.json`. The host polls preferences on its main run loop, advertises only enabled UIDs to the driver, and creates/removes their shared memory during reconciliation. Disabling the current proxy restores its physical output before withdrawing the proxy. A failed restore leaves the previous routing active and retries on the next poll. Device callbacks and preference updates run on the main queue. A disabled physical output is never auto-switched to a proxy, and the renderer emits silence when no proxy is selected instead of consuming another device's buffer.
+
 ## Key Configuration (`Constants.swift`)
 
 | Setting | Value / Meaning |

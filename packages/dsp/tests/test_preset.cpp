@@ -11,7 +11,7 @@ TEST(preset_init_flat) {
     radioform_dsp_preset_init_flat(&preset);
 
     // Check preset is initialized
-    ASSERT_EQ(preset.num_bands, RADIOFORM_MAX_BANDS);
+    ASSERT_EQ(preset.num_bands, RADIOFORM_DEFAULT_BANDS);
     ASSERT_EQ(preset.preamp_db, 0.0f);
     ASSERT(!preset.limiter_enabled); // Flat preset has limiter disabled for transparency
 
@@ -76,5 +76,18 @@ TEST(preset_validate_invalid_q) {
     preset.bands[0].q_factor = 15.0f; // Above 10.0
     ASSERT_EQ(radioform_dsp_preset_validate(&preset), RADIOFORM_ERROR_INVALID_PARAM);
 
+    PASS();
+}
+
+TEST(preset_validate_extended_bands) {
+    radioform_preset_t preset;
+    radioform_dsp_preset_init_flat(&preset);
+    preset.num_bands = RADIOFORM_MAX_BANDS;
+    ASSERT_EQ(radioform_dsp_preset_validate(&preset), RADIOFORM_OK);
+    preset.bands[RADIOFORM_MAX_BANDS - 1].gain_db = 13;
+    ASSERT_EQ(radioform_dsp_preset_validate(&preset), RADIOFORM_ERROR_INVALID_PARAM);
+    preset.bands[RADIOFORM_MAX_BANDS - 1].gain_db = 0;
+    preset.num_bands = RADIOFORM_MAX_BANDS + 1;
+    ASSERT_EQ(radioform_dsp_preset_validate(&preset), RADIOFORM_ERROR_INVALID_PARAM);
     PASS();
 }

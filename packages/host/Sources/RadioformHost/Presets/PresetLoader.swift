@@ -7,12 +7,16 @@ struct PresetJSON: Codable {
     let preampDb: Float
     let limiterEnabled: Bool
     let limiterThresholdDb: Float
+    let spatialEnabled: Bool?
+    let spatialMix: Float?
 
     enum CodingKeys: String, CodingKey {
         case name, bands
         case preampDb = "preamp_db"
         case limiterEnabled = "limiter_enabled"
         case limiterThresholdDb = "limiter_threshold_db"
+        case spatialEnabled = "spatial_enabled"
+        case spatialMix = "spatial_mix"
     }
 }
 
@@ -37,14 +41,21 @@ class PresetLoader {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         let presetJSON = try JSONDecoder().decode(PresetJSON.self, from: data)
 
+        guard (1...Int(RADIOFORM_MAX_BANDS)).contains(presetJSON.bands.count) else {
+            throw NSError(domain: "Radioform.Preset", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Presets must contain 1–\(RADIOFORM_MAX_BANDS) filters."])
+        }
+
         var preset = radioform_preset_t()
         radioform_dsp_preset_init_flat(&preset)
 
-        preset.num_bands = UInt32(min(presetJSON.bands.count, 10))
+        preset.num_bands = UInt32(presetJSON.bands.count)
 
         copyName(presetJSON.name, to: &preset)
         copyBands(presetJSON.bands, to: &preset)
 
+        preset.spatial_enabled = presetJSON.spatialEnabled ?? false
+        preset.spatial_mix = presetJSON.spatialMix ?? 0.4
         preset.preamp_db = presetJSON.preampDb
         preset.limiter_enabled = presetJSON.limiterEnabled
         preset.limiter_threshold_db = presetJSON.limiterThresholdDb
@@ -64,7 +75,7 @@ class PresetLoader {
     }
 
     private func copyBands(_ bands: [BandJSON], to preset: inout radioform_preset_t) {
-        for (i, band) in bands.prefix(10).enumerated() {
+        for (i, band) in bands.enumerated() {
             withUnsafeMutablePointer(to: &preset.bands) { bandsPtr in
                 let bandPtr = UnsafeMutableRawPointer(bandsPtr)
                     .advanced(by: i * MemoryLayout<radioform_band_t>.stride)

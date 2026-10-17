@@ -2,8 +2,24 @@ import Foundation
 import Darwin
 import CRadioformAudio
 
+// Retained by each render/heartbeat operation so hot-unplug cannot unmap a
+// buffer while a callback is using it. Dimensions never come from shared memory.
+final class SharedAudioMapping {
+    let pointer: UnsafeMutablePointer<RFSharedAudio>
+    let layout: RFAudioLayout
+    let size: Int
+
+    init(pointer: UnsafeMutablePointer<RFSharedAudio>, layout: RFAudioLayout, size: Int) {
+        self.pointer = pointer
+        self.layout = layout
+        self.size = size
+    }
+
+    deinit { munmap(pointer, size) }
+}
+
 class SharedMemoryManager {
-    private var deviceMemory: [String: UnsafeMutablePointer<RFSharedAudio>] = [:]
+    private var deviceMemory: [String: SharedAudioMapping] = [:]
     private var heartbeatTimer: DispatchSourceTimer?
     private var lock = os_unfair_lock()
 
@@ -29,13 +45,18 @@ class SharedMemoryManager {
 
         unlink(shmPath)
 
-        let fd = open(shmPath, O_CREAT | O_RDWR, 0o666)
+        let fd = open(shmPath, O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_RDWR, 0o600)
         guard fd >= 0 else {
             print("[RadioformHost] ERROR: Failed to create file: \(String(cString: strerror(errno)))")
             return false
         }
 
-        fchmod(fd, 0o666)
+        defer { close(fd) }
+        guard rf_ipc_set_permissions(fd, true) == 0 else {
+            print("[RadioformHost] ERROR: Cannot restrict shared memory access")
+            unlink(shmPath)
+            return false
+        }
 
         let sampleRate = RadioformConfig.activeSampleRate
         let frames = rf_frames_for_duration(
@@ -53,14 +74,14 @@ class SharedMemoryManager {
 
         guard ftruncate(fd, Int64(shmSize)) == 0 else {
             print("[RadioformHost] ERROR: Failed to set size: \(String(cString: strerror(errno)))")
-            close(fd)
+            unlink(shmPath)
             return false
         }
 
         let mem = mmap(nil, shmSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)
-        close(fd)
 
         guard mem != MAP_FAILED else {
+            unlink(shmPath)
             print("[RadioformHost] ERROR: mmap failed: \(String(cString: strerror(errno)))")
             return false
         }
@@ -75,8 +96,15 @@ class SharedMemoryManager {
             RadioformConfig.defaultDurationMs
         )
 
+        var layout = RFAudioLayout()
+        guard rf_audio_layout_snapshot(sharedMem, shmSize, &layout) else {
+            munmap(sharedMem, shmSize)
+            unlink(shmPath)
+            return false
+        }
+        let mapping = SharedAudioMapping(pointer: sharedMem, layout: layout, size: shmSize)
         os_unfair_lock_lock(&lock)
-        deviceMemory[uid] = sharedMem
+        deviceMemory[uid] = mapping
         os_unfair_lock_unlock(&lock)
 
         print("[RadioformHost] ✓ SUCCESS")
@@ -96,28 +124,20 @@ class SharedMemoryManager {
         }
         os_unfair_lock_unlock(&lock)
 
-        guard let sharedMem = sharedMem else { return }
-
-        let shmSize = rf_shared_audio_size(
-            sharedMem.pointee.ring_capacity_frames,
-            sharedMem.pointee.channels,
-            sharedMem.pointee.bytes_per_sample
-        )
-
-        munmap(sharedMem, shmSize)
+        guard sharedMem != nil else { return }
 
         let shmPath = PathManager.sharedMemoryPath(uid: uid)
         unlink(shmPath)
     }
 
-    func getMemory(for uid: String) -> UnsafeMutablePointer<RFSharedAudio>? {
+    func getMemory(for uid: String) -> SharedAudioMapping? {
         os_unfair_lock_lock(&lock)
         let mem = deviceMemory[uid]
         os_unfair_lock_unlock(&lock)
         return mem
     }
 
-    func getFirstMemory() -> UnsafeMutablePointer<RFSharedAudio>? {
+    func getFirstMemory() -> SharedAudioMapping? {
         os_unfair_lock_lock(&lock)
         let mem = deviceMemory.values.first
         os_unfair_lock_unlock(&lock)
@@ -137,7 +157,7 @@ class SharedMemoryManager {
             let mems = Array(self.deviceMemory.values)
             os_unfair_lock_unlock(&self.lock)
             for mem in mems {
-                rf_update_host_heartbeat(mem)
+                rf_update_host_heartbeat(mem.pointer)
             }
         }
 
@@ -157,13 +177,7 @@ class SharedMemoryManager {
         deviceMemory.removeAll()
         os_unfair_lock_unlock(&lock)
 
-        for (uid, mem) in entries {
-            let size = rf_shared_audio_size(
-                mem.pointee.ring_capacity_frames,
-                mem.pointee.channels,
-                mem.pointee.bytes_per_sample
-            )
-            munmap(mem, size)
+        for uid in entries.keys {
             unlink(PathManager.sharedMemoryPath(uid: uid))
         }
     }

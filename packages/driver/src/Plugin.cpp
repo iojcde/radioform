@@ -4,6 +4,7 @@
 #include <CoreAudio/AudioServerPlugIn.h>
 
 #include "../include/RFSharedAudio.h"
+#include "../include/RFSecureIPC.h"
 
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -34,18 +35,14 @@ static os_log_t rf_log = os_log_create("com.radioform.driver", "default");
 #define RF_LOG_INFO(fmt, ...) os_log_info(rf_log, "[Radioform INFO] " fmt, ##__VA_ARGS__)
 #define RF_LOG_DEBUG(fmt, ...) os_log_debug(rf_log, "[Radioform DEBUG] " fmt, ##__VA_ARGS__)
 
-// Fallback file logger for debugging when unified logs are unavailable.
+// Use unified logging: a predictable writable /tmp log would follow symlinks.
 static void RF_DebugLog(const char* fmt, ...) {
-    static std::mutex log_mutex;
-    std::lock_guard<std::mutex> lock(log_mutex);
-    FILE* f = fopen("/tmp/radioform-driver-debug.log", "a");
-    if (!f) return;
+    char message[1024];
     va_list args;
     va_start(args, fmt);
-    vfprintf(f, fmt, args);
-    fprintf(f, "\n");
+    vsnprintf(message, sizeof(message), fmt, args);
     va_end(args);
-    fclose(f);
+    os_log_debug(rf_log, "%{public}s", message);
 }
 
 namespace {
@@ -352,12 +349,12 @@ public:
                         // without this cushion, the host reads before the driver writes ~50% of
                         // cold starts, causing persistent underruns and Safari stutter.
                         {
-                            const uint32_t prefill = shared_memory_->ring_capacity_frames / 2;
-                            const uint32_t channels = shared_memory_->channels;
+                            const uint32_t prefill = layout_.capacity / 2;
+                            const uint32_t channels = layout_.channels;
                             std::vector<float> silence(prefill * channels, 0.0f);
-                            rf_ring_write(shared_memory_, silence.data(), prefill);
+                            rf_ring_write(shared_memory_, &layout_, silence.data(), prefill, silence.size());
                             RF_LOG_INFO("Prebuffered %u frames of silence (%ums cushion)",
-                                prefill, prefill * 1000 / shared_memory_->sample_rate);
+                                prefill, prefill * 1000 / layout_.sample_rate);
                         }
 
                         last_heartbeat_ = std::chrono::steady_clock::now();
@@ -426,7 +423,8 @@ public:
         // Get stream format
         AudioStreamBasicDescription fmt = stream->GetPhysicalFormat();
 
-        if (fmt.mBytesPerFrame == 0) {
+        // The host output buffer and the ring must agree on channel count.
+        if (fmt.mBytesPerFrame == 0 || fmt.mChannelsPerFrame != layout_.channels) {
             stats_.failed_writes++;
             return;
         }
@@ -468,7 +466,7 @@ public:
             const double delta = timestamp - last_output_timestamp_end_;
             if (delta > 0.5) {
                 prepend_silence_frames = static_cast<uint32_t>(
-                    std::min<double>(delta, shared_memory_->ring_capacity_frames / 2.0));
+                    std::min<double>(delta, layout_.capacity / 2.0));
             } else if (delta < -0.5) {
                 skip_frames = static_cast<uint32_t>(std::min<double>(-delta, frameCount));
             }
@@ -477,12 +475,12 @@ public:
         last_output_timestamp_end_ = timestamp + frameCount;
 
         // Handle sample rate conversion if needed
-        if (fmt.mSampleRate != shared_memory_->sample_rate) {
+        if (fmt.mSampleRate != layout_.sample_rate) {
             const float* payload = interleaved_buf_.data() + (skip_frames * fmt.mChannelsPerFrame);
             const uint32_t payload_frames = frameCount - skip_frames;
             if (payload_frames > 0) {
                 ProcessWithSampleRateConversion(payload, payload_frames,
-                                            fmt.mSampleRate, shared_memory_->sample_rate,
+                                            fmt.mSampleRate, layout_.sample_rate,
                                             fmt.mChannelsPerFrame);
             }
         } else {
@@ -533,103 +531,41 @@ private:
         RF_LOG_INFO("Opening: %s", shm_file_path_.c_str());
 
         struct stat st;
-        if (stat(shm_file_path_.c_str(), &st) != 0) {
-            RF_DebugLog("OpenSharedMemory: stat failed: %s", strerror(errno));
-            RF_LOG_ERROR("File not found: %s", shm_file_path_.c_str());
+        const size_t max_size = rf_shared_audio_size(19200, RF_MAX_CHANNELS, 8);
+        int fd = rf_ipc_open(shm_file_path_.c_str(), O_RDWR,
+                             sizeof(RFSharedAudio), max_size, &st);
+        if (fd < 0) {
+            RF_LOG_ERROR("Refusing unsafe or unavailable shared memory file");
             return;
         }
-
-        int fd = open(shm_file_path_.c_str(), O_RDWR);
-        if (fd == -1) {
-            RF_DebugLog("OpenSharedMemory: open failed: %s", strerror(errno));
-            RF_LOG_ERROR("open() failed: %s", strerror(errno));
-            return;
-        }
-
-        // Validate file size before mapping
-        size_t min_size = sizeof(RFSharedAudio);
-        if ((size_t)st.st_size < min_size) {
-            RF_DebugLog("OpenSharedMemory: size too small: %lld < %zu", (long long)st.st_size, min_size);
-            RF_LOG_ERROR("File too small: %lld < %zu", (long long)st.st_size, min_size);
-            close(fd);
-            return;
-        }
-
         void* mem = mmap(nullptr, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         close(fd);
-
-        if (mem == MAP_FAILED) {
-            RF_DebugLog("OpenSharedMemory: mmap failed: %s", strerror(errno));
-            RF_LOG_ERROR("mmap() failed: %s", strerror(errno));
+        if (mem == MAP_FAILED) return;
+        RFAudioLayout layout;
+        if (!rf_audio_layout_snapshot(static_cast<RFSharedAudio*>(mem), st.st_size, &layout)) {
+            munmap(mem, st.st_size);
+            RF_LOG_ERROR("Invalid shared audio layout");
             return;
         }
-
-        shared_memory_ = reinterpret_cast<RFSharedAudio*>(mem);
-
-        RF_DebugLog("OpenSharedMemory: mapped %p size=%lld rate=%u ch=%u fmt=%u",
-            mem, (long long)st.st_size, shared_memory_->sample_rate, shared_memory_->channels, shared_memory_->format);
-        RF_LOG_INFO("✓ Mapped at %p (size: %lld)", mem, (long long)st.st_size);
-        RF_LOG_INFO("  Format: %uHz, %uch, format=%u",
-            shared_memory_->sample_rate,
-            shared_memory_->channels,
-            shared_memory_->format);
-
-        current_sample_rate_ = shared_memory_->sample_rate;
-        current_channels_ = shared_memory_->channels;
+        shared_memory_ = static_cast<RFSharedAudio*>(mem);
+        layout_ = layout;
+        current_sample_rate_ = layout_.sample_rate;
+        current_channels_ = layout_.channels;
     }
 
     void Disconnect() {
         if (shared_memory_) {
-            RF_LOG_INFO("Disconnecting: %s", device_uid_.c_str());
-
-            // Mark as disconnected
             atomic_store(&shared_memory_->driver_connected, 0);
-
-            // Calculate size for munmap
-            size_t size = rf_shared_audio_size(
-                shared_memory_->ring_capacity_frames,
-                shared_memory_->channels,
-                shared_memory_->bytes_per_sample);
-
-            munmap(shared_memory_, size);
+            munmap(shared_memory_, layout_.mapped_size);
             shared_memory_ = nullptr;
+            layout_ = {};
         }
-
-        if (resampler_) {
-            resampler_->Reset();
-        }
+        if (resampler_) resampler_->Reset();
     }
 
     bool ValidateConnection() {
         if (!shared_memory_) return false;
-
-        // Check protocol version
-        if (shared_memory_->protocol_version != RF_AUDIO_PROTOCOL_VERSION) {
-            RF_DebugLog("ValidateConnection: protocol mismatch 0x%x expected 0x%x",
-                shared_memory_->protocol_version, RF_AUDIO_PROTOCOL_VERSION);
-            RF_LOG_ERROR("Protocol mismatch: 0x%x (expected 0x%x)",
-                shared_memory_->protocol_version, RF_AUDIO_PROTOCOL_VERSION);
-            return false;
-        }
-
-        // Check sample rate
-        if (!rf_is_sample_rate_supported(shared_memory_->sample_rate)) {
-            RF_DebugLog("ValidateConnection: unsupported sample rate %u", shared_memory_->sample_rate);
-            RF_LOG_ERROR("Unsupported sample rate: %u", shared_memory_->sample_rate);
-            return false;
-        }
-
-        // Check channels
-        if (shared_memory_->channels == 0 || shared_memory_->channels > RF_MAX_CHANNELS) {
-            RF_DebugLog("ValidateConnection: invalid channels %u", shared_memory_->channels);
-            RF_LOG_ERROR("Invalid channel count: %u", shared_memory_->channels);
-            return false;
-        }
-
-        // Mark driver as connected
         atomic_store(&shared_memory_->driver_connected, 1);
-        RF_DebugLog("ValidateConnection: OK (driver_connected=1)");
-
         return true;
     }
 
@@ -676,7 +612,7 @@ private:
         }
 
         uint64_t used = write_idx - read_idx;
-        if (used > shared_memory_->ring_capacity_frames) {
+        if (used > layout_.capacity) {
             RF_LOG_ERROR("Health: overflow (used > capacity)");
             return false;
         }
@@ -712,7 +648,7 @@ private:
         interleaved_buf_.resize(max_frames * max_channels);
         resampled_buf_.resize(max_frames * 2 * max_channels); // 2x for upsampling headroom
         const uint32_t max_silence_frames = std::max<uint32_t>(
-            1, shared_memory_->ring_capacity_frames / 2);
+            1, layout_.capacity / 2);
         silence_buf_.resize(max_silence_frames * max_channels, 0.0f);
     }
 
@@ -724,9 +660,9 @@ private:
 
         if (shared_memory_ && resampler_) {
             resampler_->SetChannels(new_fmt.mChannelsPerFrame);
-            resampler_->SetRates(new_fmt.mSampleRate, shared_memory_->sample_rate);
+            resampler_->SetRates(new_fmt.mSampleRate, layout_.sample_rate);
             RF_LOG_INFO("Configured resampler: %.0f -> %u Hz",
-                new_fmt.mSampleRate, shared_memory_->sample_rate);
+                new_fmt.mSampleRate, layout_.sample_rate);
         }
 
         ResizeBuffers();
@@ -802,7 +738,7 @@ private:
             resampled_buf_.data(), output_capacity);
 
         if (output_frames > 0) {
-            rf_ring_write(shared_memory_, resampled_buf_.data(), output_frames);
+            rf_ring_write(shared_memory_, &layout_, resampled_buf_.data(), output_frames, resampled_buf_.size());
         }
     }
 
@@ -814,11 +750,11 @@ private:
 
         const uint64_t write_idx = atomic_load(&shared_memory_->write_index);
         const uint64_t read_idx = atomic_load(&shared_memory_->read_index);
-        const uint32_t capacity = shared_memory_->ring_capacity_frames;
+        const uint32_t capacity = layout_.capacity;
         const uint64_t used = write_idx - read_idx;
 
         if (capacity == 0) {
-            rf_ring_write(shared_memory_, input, input_frames);
+            rf_ring_write(shared_memory_, &layout_, input, input_frames, (size_t)input_frames * channels);
             return;
         }
 
@@ -829,7 +765,7 @@ private:
 
         // Within deadband, keep exact nominal rate and avoid extra SRC work.
         if (std::llabs(error) <= deadband) {
-            rf_ring_write(shared_memory_, input, input_frames);
+            rf_ring_write(shared_memory_, &layout_, input, input_frames, (size_t)input_frames * channels);
             return;
         }
 
@@ -861,6 +797,7 @@ private:
 
     // Member variables
     RFSharedAudio* shared_memory_;
+    RFAudioLayout layout_{};
     std::string device_uid_;
     std::string shm_file_path_;
 
@@ -979,13 +916,25 @@ bool IsDeviceInCooldown(const std::string& uid) {
 
 std::map<std::string, std::string> ParseControlFile() {
     std::map<std::string, std::string> devices;
-    std::ifstream file("/tmp/radioform-devices.txt");
-    if (!file.is_open()) return devices;
-
+    struct stat st;
+    int fd = rf_ipc_open("/tmp/radioform-devices.txt", O_RDONLY, 0, 65536, &st);
+    if (fd < 0) return devices;
+    std::string content;
+    char buffer[4096];
+    ssize_t count;
+    while ((count = read(fd, buffer, sizeof(buffer))) > 0) {
+        if (content.size() + count > 65536) { close(fd); return {}; }
+        content.append(buffer, count);
+    }
+    close(fd);
+    if (count < 0) return devices;
+    std::istringstream file(content);
     std::string line;
     while (std::getline(file, line)) {
         size_t sep = line.find('|');
-        if (sep != std::string::npos) {
+        if (sep != std::string::npos && sep > 0 && sep + 1 < line.size() &&
+            line.size() <= 4096 && line.find('|', sep + 1) == std::string::npos &&
+            devices.size() < 128) {
             devices[line.substr(sep + 1)] = line.substr(0, sep);
         }
     }
@@ -1002,25 +951,18 @@ bool HostHeartbeatFresh(const std::string& uid) {
     std::string path = "/tmp/radioform-" + safe_uid;
 
     struct stat st;
-    if (stat(path.c_str(), &st) != 0) {
-        return false;
-    }
-
-    int fd = open(path.c_str(), O_RDONLY);
-    if (fd < 0) {
-        return false;
-    }
-
+    const size_t max_size = rf_shared_audio_size(19200, RF_MAX_CHANNELS, 8);
+    int fd = rf_ipc_open(path.c_str(), O_RDONLY, sizeof(RFSharedAudio), max_size, &st);
+    if (fd < 0) return false;
     void* mem = mmap(nullptr, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
     close(fd);
-    if (mem == MAP_FAILED) {
-        return false;
-    }
-
-    auto shared = reinterpret_cast<RFSharedAudio*>(mem);
-    uint64_t hb = atomic_load(&shared->host_heartbeat);
-
+    if (mem == MAP_FAILED) return false;
+    auto shared = static_cast<RFSharedAudio*>(mem);
+    RFAudioLayout layout;
+    const bool valid = rf_audio_layout_snapshot(shared, st.st_size, &layout);
+    const uint64_t hb = valid ? atomic_load(&shared->host_heartbeat) : 0;
     munmap(mem, st.st_size);
+    if (!valid || hb == 0) return false;
 
     auto now = std::chrono::steady_clock::now();
     auto& state = g_state->host_hb_cache[uid];

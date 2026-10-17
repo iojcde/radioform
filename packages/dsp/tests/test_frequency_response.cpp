@@ -377,3 +377,24 @@ TEST(freq_response_thd_remains_low) {
     radioform_dsp_destroy(engine);
     PASS();
 }
+
+TEST(freq_response_last_extended_filter_is_processed) {
+    auto* engine = radioform_dsp_create(48000);
+    ASSERT(engine != nullptr);
+    radioform_preset_t preset;
+    radioform_dsp_preset_init_flat(&preset);
+    preset.num_bands = RADIOFORM_MAX_BANDS;
+    auto& last = preset.bands[RADIOFORM_MAX_BANDS - 1];
+    last.enabled = true;
+    last.frequency_hz = 1000;
+    last.gain_db = 6;
+    last.q_factor = 2;
+    ASSERT_EQ(radioform_dsp_apply_preset(engine, &preset), RADIOFORM_OK);
+    radioform_dsp_set_bypass(engine, false);
+    auto input = generate_sine(48000, 1000, 48000);
+    std::vector<float> left(input.size()), right(input.size());
+    radioform_dsp_process_planar(engine, input.data(), input.data(), left.data(), right.data(), input.size());
+    ASSERT_NEAR(gain_to_db(measure_rms(left) / measure_rms(input)), 6, 0.2);
+    radioform_dsp_destroy(engine);
+    PASS();
+}

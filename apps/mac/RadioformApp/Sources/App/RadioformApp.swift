@@ -17,6 +17,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var onboardingCoordinator: OnboardingCoordinator?
     var updaterController: SPUStandardUpdaterController?
     var driverUpdateWindow: DriverUpdateWindow?
+    var settingsWindow: SettingsWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Register custom font
@@ -43,6 +44,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Set up menu bar UI
         setupMenuBar()
+    }
+
+    func showSettings() {
+        if settingsWindow == nil { settingsWindow = SettingsWindow(updaterController: updaterController) }
+        settingsWindow?.center()
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func initializeUpdater() {

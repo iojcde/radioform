@@ -53,6 +53,8 @@ struct SettingsView: View {
 			// Content
 			ScrollView {
 				VStack(spacing: 24) {
+					OutputDevicesSection()
+
 					// Update Settings Section
 					VStack(alignment: .leading, spacing: 16) {
 						Text("Updates")

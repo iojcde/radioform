@@ -1,5 +1,6 @@
 import Foundation
 import CoreAudio
+import RadioformConfiguration
 
 class DeviceMonitor {
     private let registry: DeviceRegistry
@@ -10,6 +11,8 @@ class DeviceMonitor {
     private var lastHandledDeviceID: AudioDeviceID = 0
     private var lastHandledTime: Date = .distantPast
     private let callbackDebounce: TimeInterval = 0.3
+    private var preferencesTimer: Timer?
+    private let preferencesStore = OutputDevicePreferenceStore()
     private var listenersRegistered = false
     private var devicesListenerRegistered = false
     private var defaultOutputListenerRegistered = false
@@ -116,31 +119,54 @@ class DeviceMonitor {
         lastHandledTime = .distantPast
     }
 
+    func startMonitoringPreferences() {
+        guard preferencesTimer == nil else { return }
+        preferencesTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            do {
+                let preferences = try self.preferencesStore.load()
+                if preferences != self.registry.outputPreferences {
+                    self.reconcile(devices: self.registry.devices, preferences: preferences)
+                }
+            } catch {
+                // Keep the last working configuration during malformed/failed writes.
+                print("[OutputPreferences] Could not load preferences: \(error)")
+            }
+        }
+    }
+
+    func stopMonitoringPreferences() {
+        preferencesTimer?.invalidate()
+        preferencesTimer = nil
+    }
+
     fileprivate func handleDeviceListChanged() {
-        let oldDevices = registry.devices
-        let newDevices = discovery.enumeratePhysicalDevices()
+        reconcile(devices: discovery.enumeratePhysicalDevices(), preferences: registry.outputPreferences)
+    }
 
-        let addedDevices = newDevices.filter { new in
-            !oldDevices.contains { $0.uid == new.uid }
+    private func reconcile(devices: [PhysicalDevice], preferences: OutputDevicePreferences) {
+        let previousPreferences = registry.outputPreferences
+        let oldEQDevices = registry.eqDevices
+        registry.outputPreferences = preferences
+
+        // Restore the real output before withdrawing the active virtual device.
+        // On failure, retain the old routing and retry on the next preferences poll.
+        guard proxyManager.restoreExcludedOutput() else {
+            registry.outputPreferences = previousPreferences
+            return
         }
-        let removedDevices = oldDevices.filter { old in
-            !newDevices.contains { $0.uid == old.uid }
-        }
+        let newEQDevices = devices.filter { preferences.isEnabled(uid: $0.uid) }
+        let added = newEQDevices.filter { new in !oldEQDevices.contains { $0.uid == new.uid } }
+        let removed = oldEQDevices.filter { old in !newEQDevices.contains { $0.uid == old.uid } }
+        for device in added { _ = memoryManager.createMemory(for: device.uid) }
+        registry.update(devices)
+        for device in removed { memoryManager.removeMemory(for: device.uid) }
 
-        for device in addedDevices {
-            print("Device added: \(device.name) (\(discovery.transportTypeName(device.transportType)))")
-            _ = memoryManager.createMemory(for: device.uid)
-        }
-
-        for device in removedDevices {
-            print("Device removed: \(device.name) (\(discovery.transportTypeName(device.transportType)))")
-            memoryManager.removeMemory(for: device.uid)
-        }
-
-        registry.update(newDevices)
-
-        if !addedDevices.isEmpty || !removedDevices.isEmpty {
-            reloadDriver()
+        if !added.isEmpty {
+            // The HAL driver polls the control file. Give it time to publish proxies.
+            DispatchQueue.main.asyncAfter(deadline: .now() + RadioformConfig.deviceWaitTimeout) { [weak self] in
+                self?.proxyManager.autoSelectProxy()
+            }
         }
     }
 
@@ -206,10 +232,6 @@ class DeviceMonitor {
         }
     }
 
-    private func reloadDriver() {
-        print("Driver reload required - restart coreaudiod with: sudo killall coreaudiod")
-    }
-
     private func getDeviceName(_ deviceID: AudioDeviceID) -> String? {
         var nameAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceNameCFString,
@@ -254,8 +276,8 @@ private func deviceListChangedCallbackC(
     _ clientData: UnsafeMutableRawPointer?
 ) -> OSStatus {
     guard let clientData else { return noErr }
-    Unmanaged<DeviceMonitor>.fromOpaque(clientData).takeUnretainedValue()
-        .handleDeviceListChanged()
+    let monitor = Unmanaged<DeviceMonitor>.fromOpaque(clientData).takeUnretainedValue()
+    DispatchQueue.main.async { monitor.handleDeviceListChanged() }
     return noErr
 }
 
@@ -266,7 +288,7 @@ private func defaultOutputChangedCallbackC(
     _ clientData: UnsafeMutableRawPointer?
 ) -> OSStatus {
     guard let clientData else { return noErr }
-    Unmanaged<DeviceMonitor>.fromOpaque(clientData).takeUnretainedValue()
-        .handleDefaultOutputChanged()
+    let monitor = Unmanaged<DeviceMonitor>.fromOpaque(clientData).takeUnretainedValue()
+    DispatchQueue.main.async { monitor.handleDefaultOutputChanged() }
     return noErr
 }

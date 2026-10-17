@@ -6,6 +6,7 @@
 #import "RadioformDSPEngine.h"
 #import "radioform_dsp.h"
 #import <vector>
+#include <cmath>
 
 // ============================================================================
 // Error Domain
@@ -108,6 +109,8 @@ static NSError * _Nullable RadioformErrorFromCError(radioform_error_t cError) {
         _preampDb = 0.0f;
         _limiterEnabled = NO;
         _limiterThresholdDb = -0.1f;
+        _spatialEnabled = NO;
+        _spatialMix = 0.4f;
     }
     return self;
 }
@@ -117,11 +120,11 @@ static NSError * _Nullable RadioformErrorFromCError(radioform_error_t cError) {
     preset.name = @"Flat";
 
     // Create 10 disabled bands at standard frequencies
-    NSMutableArray<RadioformBand *> *bands = [NSMutableArray arrayWithCapacity:RADIOFORM_MAX_BANDS];
+    NSMutableArray<RadioformBand *> *bands = [NSMutableArray arrayWithCapacity:RADIOFORM_DEFAULT_BANDS];
     const float frequencies[] = {32.0f, 64.0f, 125.0f, 250.0f, 500.0f,
                                   1000.0f, 2000.0f, 4000.0f, 8000.0f, 16000.0f};
 
-    for (int i = 0; i < RADIOFORM_MAX_BANDS; i++) {
+    for (int i = 0; i < RADIOFORM_DEFAULT_BANDS; i++) {
         RadioformBand *band = [[RadioformBand alloc] init];
         band.frequencyHz = frequencies[i];
         band.gainDb = 0.0f;
@@ -151,6 +154,8 @@ static NSError * _Nullable RadioformErrorFromCError(radioform_error_t cError) {
     if (self.bands.count == 0 || self.bands.count > RADIOFORM_MAX_BANDS) {
         return NO;
     }
+
+    if (!std::isfinite(self.spatialMix) || self.spatialMix < 0 || self.spatialMix > 1) return NO;
 
     // Check preamp range
     if (self.preampDb < -12.0f || self.preampDb > 12.0f) {
@@ -185,6 +190,8 @@ static NSError * _Nullable RadioformErrorFromCError(radioform_error_t cError) {
     copy.preampDb = self.preampDb;
     copy.limiterEnabled = self.limiterEnabled;
     copy.limiterThresholdDb = self.limiterThresholdDb;
+    copy.spatialEnabled = self.spatialEnabled;
+    copy.spatialMix = self.spatialMix;
     return copy;
 }
 
@@ -253,6 +260,8 @@ static NSError * _Nullable RadioformErrorFromCError(radioform_error_t cError) {
 
     // Copy basic fields
     cPreset.num_bands = (uint32_t)MIN(preset.bands.count, RADIOFORM_MAX_BANDS);
+    cPreset.spatial_enabled = preset.spatialEnabled;
+    cPreset.spatial_mix = preset.spatialMix;
     cPreset.preamp_db = preset.preampDb;
     cPreset.limiter_enabled = preset.limiterEnabled;
     cPreset.limiter_threshold_db = preset.limiterThresholdDb;
