@@ -50,11 +50,9 @@ class PresetMonitor {
             let preset = try loader.load(from: RadioformConfig.presetFilePath)
 
             if processor.applyPreset(preset) {
-                let name = String(
-                    cString: withUnsafeBytes(of: preset.name) {
-                        $0.baseAddress!.assumingMemoryBound(to: CChar.self)
-                    }
-                )
+                let name = withUnsafeBytes(of: preset.name) {
+                    String(cString: $0.baseAddress!.assumingMemoryBound(to: CChar.self))
+                }
                 print("Applied preset: \(name)")
                 print("    preamp_db=\(preset.preamp_db) limiter_enabled=\(preset.limiter_enabled) limiter_threshold_db=\(preset.limiter_threshold_db)")
                 print("    bands=\(preset.num_bands)")

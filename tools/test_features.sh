@@ -37,6 +37,14 @@ swiftc -module-cache-path "$TEST_DIR/module-cache" \
     -o "$TEST_DIR/extended-preset-tests"
 "$TEST_DIR/extended-preset-tests"
 
+swiftc -module-cache-path "$TEST_DIR/module-cache" \
+    -I packages/host/Sources/CRadioformDSP/include \
+    packages/host/Sources/RadioformHost/Audio/DSPProcessor.swift \
+    packages/host/Tests/DSPProcessorTests.swift \
+    "$TEST_DIR/dsp-build/libradioform_dsp.a" -lc++ -framework Accelerate \
+    -o "$TEST_DIR/dsp-processor-tests"
+"$TEST_DIR/dsp-processor-tests"
+
 swiftc -module-cache-path "$TEST_DIR/module-cache" -emit-library -emit-module \
     -module-name RadioformConfiguration packages/configuration/Sources/RadioformConfiguration/*.swift \
     -emit-module-path "$TEST_DIR/RadioformConfiguration.swiftmodule" \

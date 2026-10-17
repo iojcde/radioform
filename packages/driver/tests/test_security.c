@@ -45,6 +45,33 @@ static void test_ring(void) {
         assert(rf_ring_write(mem, &layout, large, 4801, 4801 * 2) == 4801);
         assert(atomic_load(&mem->write_index) - atomic_load(&mem->read_index) == 4800);
         free(large);
+        atomic_store(&mem->write_index, 0);
+        atomic_store(&mem->read_index, 0);
+        float extremes[] = {1, -1, 2, -2, NAN, INFINITY, -INFINITY, 0};
+        float checked[8];
+        assert(rf_ring_write(mem, &layout, extremes, 4, 8) == 4);
+        assert(rf_ring_read(mem, &layout, checked, 4, 8) == 4);
+        assert(checked[0] > .999f && checked[1] < -.999f);
+        for (size_t i = 0; i < 8; ++i) assert(isfinite(checked[i]));
+        for (size_t i = 4; i < 8; ++i) assert(checked[i] == 0);
+        // A peer can bypass the writer and put invalid floats directly in IPC.
+        if (format == RF_FORMAT_FLOAT32 || format == RF_FORMAT_FLOAT64) {
+            atomic_store(&mem->write_index, 1);
+            atomic_store(&mem->read_index, 0);
+            if (format == RF_FORMAT_FLOAT32) {
+                ((float*)mem->audio_data)[0] = NAN;
+                ((float*)mem->audio_data)[1] = INFINITY;
+            } else {
+                ((double*)mem->audio_data)[0] = NAN;
+                ((double*)mem->audio_data)[1] = INFINITY;
+            }
+            assert(rf_ring_read(mem, &layout, checked, 1, 8) == 1);
+            assert(checked[0] == 0 && checked[1] == 0);
+        }
+        if (format >= RF_FORMAT_INT16) {
+            assert(checked[2] > .999f && checked[2] <= 1);
+            assert(checked[3] < -.999f && checked[3] >= -1);
+        }
         free(mem);
     }
 }

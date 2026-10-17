@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import CRadioformDSP
 
 @main
@@ -42,6 +43,55 @@ struct ExtendedPresetTests {
                 preconditionFailure("Host accepted an invalid filter count")
             } catch { }
         }
+        for invalidType in [-1, Int.min, 7, Int.max] {
+            var fields = legacyFields
+            var bands = fields["bands"] as! [[String: Any]]
+            bands[0]["filter_type"] = invalidType
+            fields["bands"] = bands
+            try JSONSerialization.data(withJSONObject: fields).write(to: url)
+            do {
+                _ = try PresetLoader().load(from: url.path)
+                preconditionFailure("Host accepted an invalid filter type")
+            } catch { }
+        }
+        for (key, value) in [("preamp_db", 13.0), ("spatial_mix", -0.1), ("limiter_threshold_db", 1.0)] {
+            var fields = legacyFields
+            fields[key] = value
+            try JSONSerialization.data(withJSONObject: fields).write(to: url)
+            do {
+                _ = try PresetLoader().load(from: url.path)
+                preconditionFailure("Host accepted an invalid parameter")
+            } catch { }
+        }
+        try Data(repeating: 32, count: 1_048_577).write(to: url)
+        do {
+            _ = try PresetLoader().load(from: url.path)
+            preconditionFailure("Host accepted an oversized file")
+        } catch { }
+        try JSONSerialization.data(withJSONObject: legacyFields).write(to: url)
+        let link = url.appendingPathExtension("link")
+        let fifo = url.appendingPathExtension("fifo")
+        defer {
+            try? FileManager.default.removeItem(at: link)
+            try? FileManager.default.removeItem(at: fifo)
+        }
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: url.path)
+        precondition(mkfifo(fifo.path, 0o600) == 0)
+        for path in [link.path, fifo.path] {
+            do {
+                _ = try PresetLoader().load(from: path)
+                preconditionFailure("Host accepted a symlink or FIFO")
+            } catch { }
+        }
+        precondition(chmod(url.path, 0o666) == 0)
+        do {
+            _ = try PresetLoader().load(from: url.path)
+            preconditionFailure("Host accepted a publicly writable preset")
+        } catch { }
+        precondition(chmod(url.path, 0o600) == 0)
+        _ = try PresetLoader().load(from: url.path)
+        print("Preset file limits, symlinks, FIFOs, permissions and invalid parameters rejected")
+        print("Invalid signed/oversized filter types rejected without crashing")
         print("AutoEQ → JSON → host DSP: 1, 10, 12 and 32 filters preserved; 0 and 33 rejected")
     }
 }

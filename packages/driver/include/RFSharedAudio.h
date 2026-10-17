@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <time.h>
 #include <string.h>
+#include <math.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -301,6 +302,9 @@ static inline uint32_t rf_ring_write(
         for (uint32_t ch = 0; ch < layout->channels; ch++) {
             float sample = input_frames[frame * layout->channels + ch];
 
+            // Non-finite samples must not reach integer casts or poison DSP state.
+            if (!isfinite(sample)) sample = 0.0f;
+
             switch (layout->format) {
                 case RF_FORMAT_FLOAT32: {
                     float* ptr = (float*)dest;
@@ -324,7 +328,7 @@ static inline uint32_t rf_ring_write(
                     int32_t* ptr = (int32_t*)dest;
                     if (sample > 1.0f) sample = 1.0f;
                     if (sample < -1.0f) sample = -1.0f;
-                    ptr[ch] = (int32_t)(sample * 2147483647.0f);
+                    ptr[ch] = (int32_t)((double)sample * 2147483647.0);
                     break;
                 }
                 case RF_FORMAT_INT24: {
@@ -412,7 +416,7 @@ static inline uint32_t rf_ring_read(
                 }
             }
 
-            output_frames[frame * layout->channels + ch] = sample;
+            output_frames[frame * layout->channels + ch] = isfinite(sample) ? sample : 0.0f;
         }
     }
 

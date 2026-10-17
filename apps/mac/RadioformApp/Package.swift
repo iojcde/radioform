@@ -52,7 +52,7 @@ let package = Package(
     dependencies: [
         .package(path: "../../../packages/configuration"),
         // Sparkle 2.x for auto-updates
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.5.0")
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.0")
     ],
     targets: [
         .executableTarget(

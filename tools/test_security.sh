@@ -9,7 +9,7 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 cmp packages/driver/include/RFSharedAudio.h packages/host/Sources/CRadioformAudio/include/RFSharedAudio.h
 cmp packages/driver/include/RFSecureIPC.h packages/host/Sources/CRadioformAudio/include/RFSecureIPC.h
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all -g \
     packages/driver/tests/test_security.c -o "$TEST_DIR/audio-security"
 "$TEST_DIR/audio-security"
 
